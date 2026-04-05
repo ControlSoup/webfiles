@@ -18,11 +18,12 @@ cd webfiles
 # Download dependencies
 go mod tidy
 
-# Run the server
-go run main.go
+# Compile server
+go build -o web-server main.go
+./web-server --port 8080 --path .
 ```
 
-The server starts on `http://localhost:8080`.
+The server starts on `http://localhost:8080` in the current folder.
 
 ### Directory Structure
 
@@ -149,29 +150,16 @@ chmod +x test_requests.sh
 ./test_requests.sh
 ```
 
-## HTTP Status Codes
-
-| Code | Meaning |
-|------|---------|
-| 200  | OK (successful download/delete) |
-| 201  | Created (successful upload) |
-| 400  | Bad Request (invalid input) |
-| 404  | Not Found (file/table doesn't exist) |
-| 405  | Method Not Allowed |
-| 409  | Conflict (duplicate file/table) |
-| 500  | Internal Server Error |
-
 ## Notes
 
 - All uploaded files are stored in the `files/` directory
 - SQLite database is stored at `data/webfiles.db`
 - Table names are sanitized to allow only alphanumeric characters and underscores
-- CSV columns are stored as TEXT type in SQLite
 - Maximum upload size is 500MB
 
 ## Usefull commands
 
-Kill the port
+Kill the port on linux
 ```
 kill -9 $(lsof -t -i :<port_number>)
 ```
