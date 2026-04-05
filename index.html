@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File & Data Manager</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        h1 { color: #333; text-align: center; }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 768px) {
+            .container { grid-template-columns: 1fr; }
+        }
+        .panel {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .panel h2 {
+            margin-top: 0;
+            color: #444;
+            border-bottom: 2px solid #0066cc;
+            padding-bottom: 10px;
+        }
+        .upload-area {
+            border: 2px dashed #ccc;
+            padding: 30px;
+            text-align: center;
+            border-radius: 8px;
+            margin: 15px 0;
+        }
+        .upload-area:hover { border-color: #0066cc; }
+        .upload-area.dragover { border-color: #0066cc; background: #f0f7ff; }
+        button {
+            padding: 10px 20px;
+            background: #0066cc;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background: #0055aa; }
+        button.delete { background: #cc0000; }
+        button.delete:hover { background: #aa0000; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        th, td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th { background: #f5f5f5; }
+        tr:hover { background: #f9f9f9; }
+        .actions { white-space: nowrap; }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .status.success { background: #d4edda; color: #155724; }
+        .status.error { background: #f8d7da; color: #721c24; }
+        .file-icon { margin-right: 5px; }
+        input[type="file"] { margin: 10px 0; }
+        .tab-container { margin-bottom: 20px; }
+        .tab {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #e0e0e0;
+            border: none;
+            cursor: pointer;
+            margin-right: 5px;
+            border-radius: 4px 4px 0 0;
+        }
+        .tab.active {
+            background: #0066cc;
+            color: white;
+        }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <h1>File & Data Manager</h1>
+
+    <div class="tab-container">
+        <button class="tab active" onclick="showTab('files')">Files</button>
+        <button class="tab" onclick="showTab('data')">Data Tables</button>
+    </div>
+
+    <div class="container">
+        <!-- Files Panel -->
+        <div id="files-tab" class="tab-content active">
+            <div class="panel">
+                <h2>File Management</h2>
+
+                <div class="upload-area" id="fileDropZone">
+                    <p>Drag and drop files here or click to select</p>
+                    <input type="file" id="fileInput" multiple>
+                    <button onclick="uploadFiles()">Upload Files</button>
+                    <div id="fileStatus"></div>
+                </div>
+
+                <h3>Files</h3>
+                <div id="fileList">
+                    <div class="empty-state">Loading files...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Data Panel -->
+        <div id="data-tab" class="tab-content">
+            <div class="panel">
+                <h2>Data Management</h2>
+
+                <div class="upload-area" id="dataDropZone">
+                    <p>Drag and drop CSV files here to create tables</p>
+                    <input type="file" id="csvInput" accept=".csv">
+                    <input type="text" id="tableName" placeholder="Table name (optional)" style="padding: 8px; margin: 10px 0; width: 100%;">
+                    <button onclick="uploadCSV()">Upload CSV</button>
+                    <div id="dataStatus"></div>
+                </div>
+
+                <h3>Tables</h3>
+                <div id="tableList">
+                    <div class="empty-state">Loading tables...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const BASE_URL = window.location.origin;
+
+        function showTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            document.querySelector(`#${tab}-tab`).classList.add('active');
+            document.querySelector(`.tab:nth-child(${tab === 'files' ? 1 : 2})`).classList.add('active');
+            if (tab === 'files') {
+                loadFiles();
+            } else {
+                loadTables();
+            }
+        }
+
+        // File Management
+        async function loadFiles() {
+            try {
+                const response = await fetch(`${BASE_URL}/files/list_all`);
+                const files = await response.json();
+                const container = document.getElementById('fileList');
+
+                if (files.length === 0) {
+                    container.innerHTML = '<div class="empty-state">No files uploaded yet</div>';
+                    return;
+                }
+
+                container.innerHTML = `
+                    <table>
+                        <thead><tr><th>Name</th><th>Actions</th></tr></thead>
+                        <tbody>
+                            ${files.map(f => `
+                                <tr>
+                                    <td><span class="file-icon">📄</span>${f}</td>
+                                    <td class="actions">
+                                        <button onclick="downloadFile('${f}')">Download</button>
+                                        <button onclick="viewFile('${f}')">View</button>
+                                        <button class="delete" onclick="deleteFile('${f}')">Delete</button>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } catch (err) {
+                document.getElementById('fileList').innerHTML = `<div class="status error">Error loading files: ${err.message}</div>`;
+            }
+        }
+
+        async function uploadFiles() {
+            const input = document.getElementById('fileInput');
+            const status = document.getElementById('fileStatus');
+            const files = input.files;
+
+            if (files.length === 0) {
+                status.innerHTML = '<div class="status error">No files selected</div>';
+                return;
+            }
+
+            for (const file of files) {
+                const formData = new FormData();
+                formData.append('file', file);
+
+                try {
+                    const response = await fetch(`${BASE_URL}/files/upload`, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (response.ok) {
+                        status.innerHTML = `<div class="status success">Uploaded: ${file.name}</div>`;
+                    } else if (response.status === 409) {
+                        status.innerHTML = `<div class="status error">File already exists: ${file.name}</div>`;
+                    } else {
+                        status.innerHTML = `<div class="status error">Failed: ${file.name}</div>`;
+                    }
+                } catch (err) {
+                    status.innerHTML = `<div class="status error">Error: ${file.name}</div>`;
+                }
+            }
+
+            input.value = '';
+            setTimeout(() => loadFiles(), 500);
+        }
+
+        async function downloadFile(filename) {
+            window.location.href = `${BASE_URL}/files/download/${encodeURIComponent(filename)}`;
+        }
+
+        async function viewFile(filename) {
+            window.open(`${BASE_URL}/files/view/${encodeURIComponent(filename)}`, '_blank');
+        }
+
+        async function deleteFile(filename) {
+            if (!confirm(`Delete ${filename}?`)) return;
+
+            try {
+                await fetch(`${BASE_URL}/files/delete/${encodeURIComponent(filename)}`, {
+                    method: 'DELETE'
+                });
+                loadFiles();
+            } catch (err) {
+                alert('Failed to delete file');
+            }
+        }
+
+        // Data Management
+        async function loadTables() {
+            try {
+                const response = await fetch(`${BASE_URL}/data/list_all`);
+                const tables = await response.json();
+                const container = document.getElementById('tableList');
+
+                if (tables.length === 0) {
+                    container.innerHTML = '<div class="empty-state">No tables created yet</div>';
+                    return;
+                }
+
+                container.innerHTML = `
+                    <table>
+                        <thead><tr><th>Table Name</th><th>Actions</th></tr></thead>
+                        <tbody>
+                            ${tables.map(t => `
+                                <tr>
+                                    <td><span class="file-icon">📊</span>${t}</td>
+                                    <td class="actions">
+                                        <button onclick="downloadTable('${t}')">Download CSV</button>
+                                        <button class="delete" onclick="deleteTable('${t}')">Delete</button>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } catch (err) {
+                document.getElementById('tableList').innerHTML = `<div class="status error">Error loading tables: ${err.message}</div>`;
+            }
+        }
+
+        async function uploadCSV() {
+            const input = document.getElementById('csvInput');
+            const tableNameInput = document.getElementById('tableName');
+            const status = document.getElementById('dataStatus');
+            const file = input.files[0];
+
+            if (!file) {
+                status.innerHTML = '<div class="status error">No file selected</div>';
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+            if (tableNameInput.value) {
+                formData.append('table_name', tableNameInput.value);
+            }
+
+            try {
+                const response = await fetch(`${BASE_URL}/data/upload`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const text = await response.text();
+
+                if (response.ok) {
+                    status.innerHTML = `<div class="status success">${text}</div>`;
+                } else if (response.status === 409) {
+                    status.innerHTML = `<div class="status error">Table already exists</div>`;
+                } else {
+                    status.innerHTML = `<div class="status error">Failed: ${text}</div>`;
+                }
+            } catch (err) {
+                status.innerHTML = `<div class="status error">Error uploading CSV</div>`;
+            }
+
+            input.value = '';
+            tableNameInput.value = '';
+            setTimeout(() => loadTables(), 500);
+        }
+
+        async function downloadTable(tableName) {
+            window.location.href = `${BASE_URL}/data/download/${encodeURIComponent(tableName)}`;
+        }
+
+        async function deleteTable(tableName) {
+            if (!confirm(`Delete table ${tableName}? This cannot be undone.`)) return;
+
+            try {
+                await fetch(`${BASE_URL}/data/delete/${encodeURIComponent(tableName)}`, {
+                    method: 'DELETE'
+                });
+                loadTables();
+            } catch (err) {
+                alert('Failed to delete table');
+            }
+        }
+
+        // Drag and drop handlers
+        function setupDragDrop(zoneId, inputId) {
+            const zone = document.getElementById(zoneId);
+            const input = document.getElementById(inputId);
+
+            zone.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                zone.classList.add('dragover');
+            });
+
+            zone.addEventListener('dragleave', () => {
+                zone.classList.remove('dragover');
+            });
+
+            zone.addEventListener('drop', (e) => {
+                e.preventDefault();
+                zone.classList.remove('dragover');
+                input.files = e.dataTransfer.files;
+            });
+        }
+
+        // Initialize
+        setupDragDrop('fileDropZone', 'fileInput');
+        setupDragDrop('dataDropZone', 'csvInput');
+        loadFiles();
+    </script>
+</body>
+</html>
