@@ -248,6 +248,7 @@
                     <input type="text" id="yAxisTitle" placeholder="">
                 </div>
                 <button onclick="generateChart()">Generate Chart</button>
+                <button onclick="exportHtml()">Export As Html</button>
             </div>
         </div>
     </div>
@@ -262,6 +263,7 @@
         let tableData = {};  // tableName -> {columns, data}
         let selectedTables = new Set();
         let allUniqueCols = new Set();
+        let currentFigure = null;
 
         async function loadTables() {
             try {
@@ -505,7 +507,7 @@
         function generateChart() {
             const ySelect = document.getElementById('yColumnSelect');
             const chartType = document.getElementById('chartType').value;
-            const chartTitle = document.getElementById('chartTitle').value || 'Data Visualization';
+            const chartTitle = document.getElementById('chartTitle').value;
 
             const ySelections = Array.from(ySelect.selectedOptions).map(o => o.value);
             if (ySelections.length === 0) {
@@ -540,18 +542,18 @@
             const xAxisTitle = document.getElementById('xAxisTitle').value;
             const yAxisTitle = document.getElementById('yAxisTitle').value;
 
-    const layout = {
-      title: chartTitle,
-      hovermode: 'x unified',
-      xaxis: { title: xAxisTitle || null, color: '#e6e6e6' },
-      yaxis: { title: yAxisTitle || null, color: '#e6e6e6' },
-      template: 'plotly_dark',
-      paper_bgcolor: '#1e1e1e',
-      plot_bgcolor: '#2F2F2FFF',
-      font: { color: '#e6e6e6' },
-      legend: { orientation: 'v', xanchor: 'left', x: 1.02, yanchor: 'top', y: 1 },
-      margin: { t: 60, b: 60, l: 60, r: 180 }
-    };
+            const layout = {
+              title: chartTitle,
+              hovermode: 'x unified',
+              xaxis: { title: xAxisTitle || null, color: '#e6e6e6' },
+              yaxis: { title: yAxisTitle || null, color: '#e6e6e6' },
+              template: 'plotly_dark',
+              paper_bgcolor: '#1e1e1e',
+              plot_bgcolor: '#2F2F2FFF',
+              font: { color: '#e6e6e6' },
+              legend: { orientation: 'v', xanchor: 'left', x: 1.02, yanchor: 'top', y: 1 },
+              margin: { t: 60, b: 60, l: 60, r: 180 }
+            };
 
             const config = {
                 responsive: true,
@@ -564,6 +566,10 @@
             document.getElementById('plotDiv').style.background = 'transparent';
             document.getElementById('plotContainer').style.display = 'block';
 
+            currentFigure = {
+                data: traces,
+                layout: layout
+            };
             Plotly.newPlot('plotDiv', traces, layout, config);
         }
 
@@ -571,8 +577,56 @@
             return Array.from(set).sort();
         }
 
+    function exportHtml() {
+            if (!currentFigure) {
+                alert("No chart to export.");
+                return;
+            }
+
+             // Convert to safe JSON for embedding
+            const safeJson = obj => JSON.stringify(obj).replace(/<\/script>/g, '<\\/script>');
+
+            let html = document.getElementById('exportTemplate').innerHTML;
+            html = html
+                .replace('__DATA__', safeJson(currentFigure.data))
+                .replace('__LAYOUT__', safeJson(currentFigure.layout))
+                .replace('__BODY_BG__', currentFigure.layout.paper_bgcolor || '#ffffff');  // fallback white
+            const blob = new Blob([html], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'chart.html';
+            a.click();
+
+            URL.revokeObjectURL(url);
+        }
+
         // Initialize
         loadTables();
     </script>
 </body>
 </html>
+<template id="exportTemplate">
+    <!DOCTYPE html>
+    <html>
+        <style>
+            html, body {
+                margin: 0;
+                padding: 0;
+                background: __BODY_BG__;
+            }
+        </style>
+        <head>
+            <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+        </head>
+            <body style="margin:0; background: __BODY_BG__;">
+                <div id="plot"></div>
+                <script>
+                    const data = __DATA__;
+                    const layout = __LAYOUT__;
+                    Plotly.newPlot('plot', data, layout);
+                </script>
+            </body>
+    </html>
+</template>
