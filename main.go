@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/csv"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -12,7 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/marcboeker/go-duckdb/v2"
 )
 
 //go:embed index.html plotting.html
@@ -96,13 +97,25 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize SQLite database
-	db, err = sql.Open("sqlite3", dbFile)
+	// Initialize DuckDB database
+	db, err = sql.Open("duckdb", dbFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to open database: %v\n", err)
 		os.Exit(1)
 	}
 	defer db.Close()
+
+	// Create metadata table on startup
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS "_metadata" (
+		table_name VARCHAR PRIMARY KEY,
+		metadata JSON,
+		created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+		updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+	)`)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create metadata table: %v\n", err)
+		os.Exit(1)
+	}
 
 	// Set up routes with method enforcement
 	http.HandleFunc("/files/list_all", methodHandler(http.MethodGet, handleFileList))
@@ -115,6 +128,7 @@ func main() {
 	http.HandleFunc("/data/download/", methodHandler(http.MethodGet, handleDataDownload))
 	http.HandleFunc("/data/delete/", methodHandler(http.MethodDelete, handleDataDelete))
 	http.HandleFunc("/data/query/", methodHandler(http.MethodGet, handleDataQuery))
+	http.HandleFunc("/data/metadata/", handleDataMetadata)
 
 	// Serve embedded index.html at root, static files from disk for everything else
 	http.HandleFunc("/", handleStatic)
@@ -305,8 +319,8 @@ func handleFileDelete(w http.ResponseWriter, r *http.Request) {
 // CSV/SQLite Data Handlers
 
 func handleDataList(w http.ResponseWriter, r *http.Request) {
-	// Query all user tables from sqlite_master
-	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+	// Query all user tables from duckdb_tables (exclude _metadata internal table)
+	rows, err := db.Query("SELECT table_name FROM duckdb_tables WHERE table_name != '_metadata' ORDER BY table_name")
 	if err != nil {
 		http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -316,12 +330,12 @@ func handleDataList(w http.ResponseWriter, r *http.Request) {
 	// Collect table names
 	var tables []string
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var tableName string
+		if err := rows.Scan(&tableName); err != nil {
 			http.Error(w, "Failed to scan table name: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		tables = append(tables, name)
+		tables = append(tables, tableName)
 	}
 
 	// Return as JSON array
@@ -455,6 +469,16 @@ func handleDataUpload(w http.ResponseWriter, r *http.Request) {
 	if err := tx.Commit(); err != nil {
 		http.Error(w, "Failed to commit transaction: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Store metadata if provided
+	metadata := r.FormValue("metadata")
+	if metadata != "" {
+		_, err = db.Exec("INSERT INTO _metadata (table_name, metadata) VALUES (?, ?)", tableName, metadata)
+		if err != nil {
+			http.Error(w, "Failed to save metadata: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 	}
 
 	w.WriteHeader(http.StatusCreated)
@@ -667,6 +691,93 @@ func handleDataQuery(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "]}")
 }
 
+// Metadata Handler
+
+func handleDataMetadata(w http.ResponseWriter, r *http.Request) {
+	// Extract table name from URL path
+	tableName, err := extractPathSegment(r, "/data/metadata/")
+	if err != nil {
+		http.Error(w, "No table name provided", http.StatusBadRequest)
+		return
+	}
+
+	// Sanitize table name (no spaces/dashes allowed)
+	tableName = sanitizeString(tableName, false)
+	if tableName == "" {
+		http.Error(w, "Invalid table name", http.StatusBadRequest)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		// Query metadata
+		var metadata any
+		err = db.QueryRow("SELECT metadata FROM _metadata WHERE table_name=?", tableName).Scan(&metadata)
+		if err == sql.ErrNoRows {
+			http.Error(w, "No metadata found for table", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(metadata)
+
+	case http.MethodPut:
+		// Check if table exists
+		exists, err := tableExists(tableName)
+		if err != nil {
+			http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !exists {
+			http.Error(w, "Table not found", http.StatusNotFound)
+			return
+		}
+
+		// Read request body
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
+		}
+		defer r.Body.Close()
+
+		// Validate JSON
+		metadataStr := strings.TrimSpace(string(body))
+		if metadataStr == "" {
+			http.Error(w, "Empty metadata", http.StatusBadRequest)
+			return
+		}
+
+		// Upsert metadata
+		_, err = db.Exec("INSERT OR REPLACE INTO _metadata (table_name, metadata, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)", tableName, metadataStr)
+		if err != nil {
+			http.Error(w, "Failed to save metadata: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "Metadata saved successfully")
+
+	case http.MethodDelete:
+		// Delete metadata
+		_, err = db.Exec("DELETE FROM _metadata WHERE table_name=?", tableName)
+		if err != nil {
+			http.Error(w, "Failed to delete metadata: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "Metadata deleted successfully")
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 // Static file handler - serves embedded index.html at root
 func handleStatic(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/" || r.URL.Path == "/index.html" {
@@ -701,6 +812,6 @@ func handlePlottingPage(w http.ResponseWriter, r *http.Request) {
 
 func tableExists(tableName string) (bool, error) {
 	var count int
-	err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?", tableName).Scan(&count)
+	err := db.QueryRow("SELECT COUNT(*) FROM duckdb_tables WHERE table_name=?", tableName).Scan(&count)
 	return count > 0, err
 }

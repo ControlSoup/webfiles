@@ -151,6 +151,20 @@
         </div>
     </div>
 
+    <!-- Metadata Modal -->
+    <div id="metadataModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000;">
+        <div style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); background:white; padding:30px; border-radius:8px; max-width:600px; width:90%; max-height:80vh; overflow:auto;">
+            <h3 style="margin-top:0;" id="metadataTitle">Metadata</h3>
+            <pre id="metadataContent" style="background:#f5f5f5; padding:15px; border-radius:4px; overflow:auto; max-height:60vh;"></pre>
+            <div style="text-align:right; margin-top:20px;">
+                <button onclick="closeMetadataModal()">Close</button>
+            </div>
+        </div>
+    </div>
+            </div>
+        </div>
+    </div>
+
     <script>
         const BASE_URL = window.location.origin;
 
@@ -278,6 +292,7 @@
                                     <td><span class="file-icon">📊</span>${t}</td>
                                     <td class="actions">
                                         <button onclick="downloadTable('${t}')">Download CSV</button>
+                                        <button onclick="viewMetadata('${t}')">View Metadata</button>
                                         <button class="delete" onclick="deleteTable('${t}')">Delete</button>
                                     </td>
                                 </tr>
@@ -346,6 +361,29 @@
             } catch (err) {
                 alert('Failed to delete table');
             }
+        }
+
+        async function viewMetadata(tableName) {
+            try {
+                const response = await fetch(`${BASE_URL}/data/metadata/${encodeURIComponent(tableName)}`);
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        alert('No metadata found for table: ' + tableName);
+                        return;
+                    }
+                    throw new Error('Failed to fetch metadata');
+                }
+                const metadata = await response.json();
+                document.getElementById('metadataTitle').textContent = 'Metadata: ' + tableName;
+                document.getElementById('metadataContent').textContent = JSON.stringify(metadata, null, 2);
+                document.getElementById('metadataModal').style.display = 'block';
+            } catch (err) {
+                alert('Failed to load metadata: ' + err.message);
+            }
+        }
+
+        function closeMetadataModal() {
+            document.getElementById('metadataModal').style.display = 'none';
         }
 
         // Drag and drop handlers
